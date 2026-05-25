@@ -625,7 +625,22 @@ async function apiFetch(url, opts={}, ms=10000){
 // OURO — 3 fontes em cascata
 // ══════════════════════════════════════════════
 async function fetchGold(){
-  // FONTE 1: gold-api.com
+  // FONTE 1: Twelve Data XAU/USD forex spot — 24h, igual corretoras
+  if(TD_KEY){
+    try {
+      const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=XAU%2FUSD&apikey=${TD_KEY}`);
+      const d=await r.json();
+      if(d.status==='error') throw new Error(d.message||'TD error');
+      const price=parseFloat(d.close||d.price||0);
+      if(price<100) throw new Error('XAU/USD TD suspeito: '+price);
+      ST.xau=price;
+      ST.xau_prev=parseFloat(d.previous_close||d.open||price);
+      console.log('[XAU✓] TwelveData XAU/USD forex 24h',price,'prev',ST.xau_prev);
+      return true;
+    } catch(e){ console.warn('[XAU src1 TD]',e.message); }
+  }
+
+  // FONTE 2: gold-api.com (fallback sem chave)
   try {
     const r=await apiFetch('https://api.gold-api.com/price/XAU');
     const d=await r.json();
@@ -634,11 +649,11 @@ async function fetchGold(){
     ST.xau=price;
     const prev=parseFloat(d.prev_close||d.previousClose||d.open_price||0);
     ST.xau_prev=(prev>100)?prev:price;
-    console.log('[XAU✓] gold-api.com',price,'prev',ST.xau_prev);
+    console.log('[XAU✓] gold-api.com fallback',price);
     return true;
-  } catch(e){ console.warn('[XAU src1]',e.message); }
+  } catch(e){ console.warn('[XAU src2 gold-api]',e.message); }
 
-  // FONTE 2: GoldAPI.io (se tiver chave)
+  // FONTE 3: GoldAPI.io (se tiver chave)
   if(GOLD_KEY){
     try {
       const r=await apiFetch('https://www.goldapi.io/api/XAU/USD',
@@ -647,70 +662,56 @@ async function fetchGold(){
       if(!d.price) throw new Error('sem price');
       ST.xau=parseFloat(d.price);
       ST.xau_prev=parseFloat(d.prev_close_price||d.open_price||d.price);
-      console.log('[XAU✓] goldapi.io',ST.xau);
+      console.log('[XAU✓] goldapi.io fallback',ST.xau);
       return true;
-    } catch(e){ console.warn('[XAU src2]',e.message); }
+    } catch(e){ console.warn('[XAU src3 goldapi.io]',e.message); }
   }
-
-  // FONTE 3: Finnhub GC=F
-  try {
-    const r=await apiFetch(`https://finnhub.io/api/v1/quote?symbol=GC%3DF&token=${FH_KEY}`);
-    const d=await r.json();
-    if(!d.c||d.c===0) throw new Error('c=0');
-    ST.xau=parseFloat(d.c);
-    ST.xau_prev=parseFloat(d.pc||d.o||d.c);
-    console.log('[XAU✓] Finnhub GC=F',ST.xau);
-    return true;
-  } catch(e){ console.warn('[XAU src3]',e.message); }
   return false;
 }
 
 // ══════════════════════════════════════════════
-// NASDAQ 100 — Twelve Data como primário (símbolo NDX exato)
-// Fallback: Finnhub NDX
-// NUNCA usar QQQ (ETF ~500) nem IXIC (~19000 mas é Composite, não 100)
+// NASDAQ 100 — Twelve Data US100/USD CFD 24h
 // ══════════════════════════════════════════════
+
 async function fetchNAS(){
-  // FONTE 1: Twelve Data /quote?symbol=NDX (índice exato, ~19000-27000)
+  // FONTE 1: Twelve Data US100/USD CFD — 24h, igual corretoras (XM, IC, Pepperstone)
   if(TD_KEY){
     try {
-      const r=await apiFetch(
-        `https://api.twelvedata.com/quote?symbol=NDX&apikey=${TD_KEY}`);
+      const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=US100%2FUSD&apikey=${TD_KEY}`);
       const d=await r.json();
       if(d.status==='error') throw new Error(d.message||'TD error');
       const price=parseFloat(d.close||d.price||0);
-      if(price<5000) throw new Error('NDX TD valor suspeito: '+price);
+      if(price<5000||price>35000) throw new Error('US100 TD suspeito: '+price);
       ST.nas=price;
       ST.nas_prev=parseFloat(d.previous_close||d.open||price);
-      console.log('[NAS✓] TwelveData NDX',price);
+      console.log('[NAS✓] TwelveData US100/USD CFD 24h',price,'prev',ST.nas_prev);
       return true;
-    } catch(e){ console.warn('[NAS src1 TwelveData]',e.message); }
+    } catch(e){ console.warn('[NAS src1 TD US100]',e.message); }
+
+    // Fallback: NDX index no TD
+    try {
+      const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=NDX&apikey=${TD_KEY}`);
+      const d=await r.json();
+      if(d.status==='error') throw new Error(d.message||'TD error');
+      const price=parseFloat(d.close||d.price||0);
+      if(price<5000||price>35000) throw new Error('NDX TD suspeito: '+price);
+      ST.nas=price;
+      ST.nas_prev=parseFloat(d.previous_close||d.open||price);
+      console.log('[NAS✓] TwelveData NDX index fallback',price);
+      return true;
+    } catch(e){ console.warn('[NAS src1b TD NDX]',e.message); }
   }
 
-  // FONTE 2: Finnhub NDX (índice, funciona durante mercado aberto)
+  // FONTE 2: Finnhub NDX spot
   try {
-    const r=await apiFetch(
-      `https://finnhub.io/api/v1/quote?symbol=NDX&token=${FH_KEY}`);
+    const r=await apiFetch(`https://finnhub.io/api/v1/quote?symbol=NDX&token=${FH_KEY}`);
     const d=await r.json();
-    // NDX deve estar entre 5000 e 35000
-    if(!d.c||d.c<5000||d.c>35000) throw new Error('NDX FH valor suspeito: '+d.c);
+    if(!d.c||d.c<5000||d.c>35000) throw new Error('NDX c='+d.c);
     ST.nas=parseFloat(d.c);
     ST.nas_prev=parseFloat(d.pc||d.o||d.c);
-    console.log('[NAS✓] Finnhub NDX',ST.nas);
+    console.log('[NAS✓] Finnhub NDX spot fallback',ST.nas);
     return true;
   } catch(e){ console.warn('[NAS src2 Finnhub NDX]',e.message); }
-
-  // FONTE 3: Twelve Data sem chave (tenta mesmo assim — pode funcionar em demo)
-  try {
-    const r=await apiFetch('https://api.twelvedata.com/price?symbol=NDX&apikey=demo');
-    const d=await r.json();
-    const price=parseFloat(d.price||0);
-    if(price<5000) throw new Error('demo NDX suspeito: '+price);
-    ST.nas=price;
-    ST.nas_prev=price; // sem prev no endpoint /price
-    console.log('[NAS✓] TwelveData demo NDX',price);
-    return true;
-  } catch(e){ console.warn('[NAS src3 TD demo]',e.message); }
 
   return false;
 }
@@ -718,6 +719,7 @@ async function fetchNAS(){
 // ══════════════════════════════════════════════
 // FINNHUB GENÉRICO — com validação de range
 // ══════════════════════════════════════════════
+
 async function fetchFH(sym, minVal=0, maxVal=Infinity){
   try {
     const r=await apiFetch(
