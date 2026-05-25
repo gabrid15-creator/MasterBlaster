@@ -674,22 +674,38 @@ async function fetchGold(){
 // ══════════════════════════════════════════════
 
 async function fetchNAS(){
-  // FONTE 1: Twelve Data NDX — índice exato, free tier, ~19000-30000
+  // FONTE 1: Yahoo Finance ^NDX — sem chave, 24h, índice exato
+  try {
+    const url='https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d';
+    const r=await apiFetch(url,{headers:{'Accept':'application/json'}});
+    const d=await r.json();
+    const meta=d?.chart?.result?.[0]?.meta;
+    if(!meta) throw new Error('Yahoo sem meta');
+    const price=parseFloat(meta.regularMarketPrice||0);
+    const prev =parseFloat(meta.chartPreviousClose||meta.previousClose||0);
+    if(price<5000||price>40000) throw new Error('Yahoo NDX suspeito: '+price);
+    ST.nas=price;
+    ST.nas_prev=(prev>5000)?prev:price;
+    console.log('[NAS✓] Yahoo Finance ^NDX',price,'prev',ST.nas_prev);
+    return true;
+  } catch(e){ console.warn('[NAS src1 Yahoo]',e.message); }
+
+  // FONTE 2: Twelve Data NDX (se tiver chave)
   if(TD_KEY){
     try {
       const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=NDX&apikey=${TD_KEY}`);
       const d=await r.json();
       if(d.status==='error') throw new Error(d.message||'TD error');
       const price=parseFloat(d.close||d.price||0);
-      if(price<5000||price>40000) throw new Error('NDX suspeito: '+price);
+      if(price<5000||price>40000) throw new Error('NDX TD suspeito: '+price);
       ST.nas=price;
       ST.nas_prev=parseFloat(d.previous_close||d.open||price);
-      console.log('[NAS✓] TwelveData NDX',price,'prev',ST.nas_prev);
+      console.log('[NAS✓] TwelveData NDX',price);
       return true;
-    } catch(e){ console.warn('[NAS src1 TD NDX]',e.message); }
+    } catch(e){ console.warn('[NAS src2 TD]',e.message); }
   }
 
-  // FONTE 2: Finnhub NDX spot
+  // FONTE 3: Finnhub NDX
   try {
     const r=await apiFetch(`https://finnhub.io/api/v1/quote?symbol=NDX&token=${FH_KEY}`);
     const d=await r.json();
@@ -698,7 +714,7 @@ async function fetchNAS(){
     ST.nas_prev=parseFloat(d.pc||d.o||d.c);
     console.log('[NAS✓] Finnhub NDX',ST.nas);
     return true;
-  } catch(e){ console.warn('[NAS src2 FH NDX]',e.message); }
+  } catch(e){ console.warn('[NAS src3 FH]',e.message); }
 
   return false;
 }
