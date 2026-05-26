@@ -676,49 +676,37 @@ async function fetchGold(){
 // ══════════════════════════════════════════════
 
 async function fetchNAS(){
-  // FONTE 1: Alpha Vantage — gratuito, CORS ok, NDX exato
-  // Chave grátis: alphavantage.co/support/#api-key (demo funciona com limite)
-  const avKey = localStorage.getItem('mb_av') || 'demo';
+  // Yahoo Finance ^NDX — sem chave, CORS ok em HTTPS, NDX exato
   try {
     const r=await apiFetch(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=NDX&apikey=${avKey}`);
+      'https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d',
+      {headers:{'Accept':'application/json'}});
     const d=await r.json();
-    const q=d['Global Quote'];
-    if(!q||!q['05. price']) throw new Error('AV sem dados NDX');
-    const price=parseFloat(q['05. price']);
-    const prev =parseFloat(q['08. previous close']||price);
-    if(price<5000||price>40000) throw new Error('NDX AV suspeito: '+price);
+    const meta=d?.chart?.result?.[0]?.meta;
+    if(!meta) throw new Error('Yahoo sem meta');
+    const price=parseFloat(meta.regularMarketPrice||0);
+    const prev =parseFloat(meta.chartPreviousClose||meta.previousClose||0);
+    if(price<5000||price>40000) throw new Error('NDX Yahoo suspeito: '+price);
     ST.nas=price;
-    ST.nas_prev=prev;
-    console.log('[NAS✓] AlphaVantage NDX',price,'prev',prev);
+    ST.nas_prev=(prev>5000)?prev:price;
+    console.log('[NAS✓] Yahoo Finance ^NDX',price,'prev',ST.nas_prev);
     return true;
-  } catch(e){ console.warn('[NAS src1 AV]',e.message); }
+  } catch(e){ console.warn('[NAS src1 Yahoo]',e.message); }
 
-  // FONTE 2: Twelve Data NDX (se tiver chave)
+  // Fallback: Twelve Data NDX (se tiver chave válida com plano pago)
   if(TD_KEY){
     try {
       const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=NDX&apikey=${TD_KEY}`);
       const d=await r.json();
-      if(d.status==='error') throw new Error(d.message||'TD error');
-      const price=parseFloat(d.close||d.price||0);
+      if(d.status==='error') throw new Error(d.message);
+      const price=parseFloat(d.close||0);
       if(price<5000||price>40000) throw new Error('NDX TD suspeito: '+price);
       ST.nas=price;
       ST.nas_prev=parseFloat(d.previous_close||d.open||price);
-      console.log('[NAS✓] TwelveData NDX',price);
+      console.log('[NAS✓] TwelveData NDX fallback',price);
       return true;
     } catch(e){ console.warn('[NAS src2 TD]',e.message); }
   }
-
-  // FONTE 3: Finnhub NDX
-  try {
-    const r=await apiFetch(`https://finnhub.io/api/v1/quote?symbol=NDX&token=${FH_KEY}`);
-    const d=await r.json();
-    if(!d.c||d.c<5000||d.c>40000) throw new Error('NDX FH suspeito: '+d.c);
-    ST.nas=parseFloat(d.c);
-    ST.nas_prev=parseFloat(d.pc||d.o||d.c);
-    console.log('[NAS✓] Finnhub NDX',ST.nas);
-    return true;
-  } catch(e){ console.warn('[NAS src3 FH]',e.message); }
 
   return false;
 }
