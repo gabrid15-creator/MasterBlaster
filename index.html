@@ -676,36 +676,57 @@ async function fetchGold(){
 // ══════════════════════════════════════════════
 
 async function fetchNAS(){
-  // Yahoo Finance ^NDX — sem chave, CORS ok em HTTPS, NDX exato
-  try {
-    const r=await apiFetch(
-      'https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d',
-      {headers:{'Accept':'application/json'}});
-    const d=await r.json();
-    const meta=d?.chart?.result?.[0]?.meta;
-    if(!meta) throw new Error('Yahoo sem meta');
-    const price=parseFloat(meta.regularMarketPrice||0);
-    const prev =parseFloat(meta.chartPreviousClose||meta.previousClose||0);
-    if(price<5000||price>40000) throw new Error('NDX Yahoo suspeito: '+price);
-    ST.nas=price;
-    ST.nas_prev=(prev>5000)?prev:price;
-    console.log('[NAS✓] Yahoo Finance ^NDX',price,'prev',ST.nas_prev);
-    return true;
-  } catch(e){ console.warn('[NAS src1 Yahoo]',e.message); }
+  // Tenta 3 URLs do Yahoo Finance — diferentes endpoints, mesmo dado
+  const yahooUrls = [
+    'https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d',
+    'https://query2.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d',
+    'https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5ENDX',
+  ];
 
-  // Fallback: Twelve Data NDX (se tiver chave válida com plano pago)
+  for(const url of yahooUrls){
+    try {
+      const r = await apiFetch(url, {}, 8000);
+      const d = await r.json();
+
+      // Formato v8/chart
+      const meta = d?.chart?.result?.[0]?.meta;
+      if(meta){
+        const price = parseFloat(meta.regularMarketPrice||0);
+        const prev  = parseFloat(meta.chartPreviousClose||meta.previousClose||0);
+        if(price>5000&&price<40000){
+          ST.nas=price; ST.nas_prev=(prev>5000)?prev:price;
+          console.log('[NAS✓] Yahoo chart ^NDX',price,'prev',ST.nas_prev);
+          return true;
+        }
+      }
+
+      // Formato v7/quote
+      const q = d?.quoteResponse?.result?.[0];
+      if(q){
+        const price = parseFloat(q.regularMarketPrice||0);
+        const prev  = parseFloat(q.regularMarketPreviousClose||0);
+        if(price>5000&&price<40000){
+          ST.nas=price; ST.nas_prev=(prev>5000)?prev:price;
+          console.log('[NAS✓] Yahoo quote ^NDX',price,'prev',ST.nas_prev);
+          return true;
+        }
+      }
+    } catch(e){ console.warn('[NAS Yahoo]',url.slice(30),e.message); }
+  }
+
+  // Fallback: Twelve Data (plano pago)
   if(TD_KEY){
     try {
       const r=await apiFetch(`https://api.twelvedata.com/quote?symbol=NDX&apikey=${TD_KEY}`);
       const d=await r.json();
       if(d.status==='error') throw new Error(d.message);
       const price=parseFloat(d.close||0);
-      if(price<5000||price>40000) throw new Error('NDX TD suspeito: '+price);
+      if(price<5000||price>40000) throw new Error('suspeito: '+price);
       ST.nas=price;
       ST.nas_prev=parseFloat(d.previous_close||d.open||price);
-      console.log('[NAS✓] TwelveData NDX fallback',price);
+      console.log('[NAS✓] TwelveData NDX',price);
       return true;
-    } catch(e){ console.warn('[NAS src2 TD]',e.message); }
+    } catch(e){ console.warn('[NAS TD]',e.message); }
   }
 
   return false;
