@@ -159,7 +159,9 @@ a{text-decoration:none;color:inherit}
     <input id="inp-fh" type="password" class="modal-input" placeholder="d7f7q...">
     <label class="modal-label">Gemini API Key — <a href="https://aistudio.google.com/app/apikey" target="_blank" class="modal-link">aistudio.google.com</a> (gratuito)</label>
     <input id="inp-gem" type="password" class="modal-input" placeholder="AIza...">
-    <div class="modal-hint">Gemini 2.0 Flash é grátis. Sem chave: modelo local de ML é usado como fallback.</div>
+    <label class="modal-label">Alpha Vantage Key — <a href="https://alphavantage.co/support/#api-key" target="_blank" class="modal-link">alphavantage.co</a> (gratuito — para NDX)</label>
+    <input id="inp-av" type="password" class="modal-input" placeholder="sua_chave_alphavantage (ou deixe vazio para demo)">
+    <div class="modal-hint">Gemini 2.0 Flash é grátis. Sem chave Gemini: modelo local de ML é usado. Alpha Vantage free: 25 req/dia.</div>
     <div class="modal-btns">
       <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-save" onclick="saveKeys()">💾 Salvar</button>
@@ -674,21 +676,23 @@ async function fetchGold(){
 // ══════════════════════════════════════════════
 
 async function fetchNAS(){
-  // FONTE 1: Yahoo Finance ^NDX — sem chave, 24h, índice exato
+  // FONTE 1: Alpha Vantage — gratuito, CORS ok, NDX exato
+  // Chave grátis: alphavantage.co/support/#api-key (demo funciona com limite)
+  const avKey = localStorage.getItem('mb_av') || 'demo';
   try {
-    const url='https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=2d';
-    const r=await apiFetch(url,{headers:{'Accept':'application/json'}});
+    const r=await apiFetch(
+      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=NDX&apikey=${avKey}`);
     const d=await r.json();
-    const meta=d?.chart?.result?.[0]?.meta;
-    if(!meta) throw new Error('Yahoo sem meta');
-    const price=parseFloat(meta.regularMarketPrice||0);
-    const prev =parseFloat(meta.chartPreviousClose||meta.previousClose||0);
-    if(price<5000||price>40000) throw new Error('Yahoo NDX suspeito: '+price);
+    const q=d['Global Quote'];
+    if(!q||!q['05. price']) throw new Error('AV sem dados NDX');
+    const price=parseFloat(q['05. price']);
+    const prev =parseFloat(q['08. previous close']||price);
+    if(price<5000||price>40000) throw new Error('NDX AV suspeito: '+price);
     ST.nas=price;
-    ST.nas_prev=(prev>5000)?prev:price;
-    console.log('[NAS✓] Yahoo Finance ^NDX',price,'prev',ST.nas_prev);
+    ST.nas_prev=prev;
+    console.log('[NAS✓] AlphaVantage NDX',price,'prev',prev);
     return true;
-  } catch(e){ console.warn('[NAS src1 Yahoo]',e.message); }
+  } catch(e){ console.warn('[NAS src1 AV]',e.message); }
 
   // FONTE 2: Twelve Data NDX (se tiver chave)
   if(TD_KEY){
@@ -1140,31 +1144,90 @@ function runLocalML(){
 
   // ── XAU score — 10 fatores ──
   let xs=50;
-  xs += xPct*3;                                         // F1: momentum preço
-  xs += dxy>105?-10:dxy>103?-6:dxy<99?+8:+2;           // F2: DXY (inverso)
-  xs += v>30?+12:v>25?+7:v<15?0:+3;                    // F3: VIX (safe haven)
-  xs += spread<-0.5?+4:spread<0?+2:0;                   // F4: curva invertida (recessão=safe haven)
-  xs += realYield>2.5?-8:realYield>1.5?-4:realYield<0?+8:+1; // F5: yield real
-  xs += 8;                                              // F6: BCs comprando (estrutural)
-  xs += 4;                                              // F7: geopolítico (ativo)
-  xs += 2;                                              // F8: ETF flows positivos
-  xs += ST.xag&&(ST.xau/ST.xag)>90?+3:0;              // F9: ratio Au/Ag esticado = ouro relativo caro
-  xs += ST.btc&&ST.btc>90000?-2:0;                     // F10: BTC muito alto = menos safe haven
-  xs=Math.max(10,Math.min(92,xs));
+
+  // ── CONTEXTO MACRO (determina o ambiente) ──
+  const dxyStrong  = dxy > 104;          // DXY forte = pressão sobre ouro
+  const dxyWeak    = dxy < 100;          // DXY fraco = suporte ao ouro
+  const vixFear    = v > 25;             // Medo = safe haven demand
+  const vixPanic   = v > 32;             // Pânico = forte safe haven
+  const yieldPress = realYield > 2;      // Yield real alto = custo oportunidade
+  const riskOnEnv  = v < 20 && !dxyStrong; // Ambiente risk-on
+
+  // ── F1: MOMENTUM DO DIA — interpretado no contexto macro ──
+  // Ouro caindo com DXY forte = bear confirmado (macro explica a queda)
+  // Ouro caindo com VIX alto  = pode ser realização de lucro, macro ainda bull
+  // Ouro subindo com VIX alto = safe haven demand ativo = bullish
+  const momentumRaw = xPct > 1?+8: xPct > 0.3?+5: xPct > 0?+2:
+                      xPct > -0.3?-2: xPct > -1?-5: -8;
+  // Ajuste contextual: se ouro cai MAS VIX está alto = amortece o sinal bear
+  const momentumAdj = (xPct < 0 && vixFear)  ? momentumRaw * 0.4  // queda com medo = menos bearish
+                    : (xPct < 0 && dxyStrong) ? momentumRaw * 1.4  // queda com DXY forte = mais bearish
+                    : (xPct > 0 && dxyStrong) ? momentumRaw * 0.6  // alta vs DXY forte = resistência
+                    : (xPct > 0 && vixFear)   ? momentumRaw * 1.3  // alta com medo = safe haven real
+                    : momentumRaw;
+  xs += momentumAdj;
+
+  // ── F2: DXY — correlação inversa -0.81 ──
+  xs += dxy>106?-10: dxy>104?-7: dxy>102?-3: dxy<99?+8: dxy<101?+3: 0;
+
+  // ── F3: VIX — safe haven demand ──
+  // VIX alto = ouro se beneficia como safe haven
+  xs += vixPanic?+12: vixFear?+7: v<15?-1: v<20?+2: +3;
+
+  // ── F4: Yield real — custo de oportunidade ──
+  xs += realYield>3?-10: realYield>2?-6: realYield>1?-2: realYield<0?+8: +1;
+
+  // ── F5: Curva invertida — sinal recessivo = safe haven ──
+  xs += spread<-0.8?+5: spread<-0.3?+3: spread<0?+1: 0;
+
+  // ── F6: Risk-on penaliza ouro (capital flui para risco) ──
+  xs += riskOnEnv && xPct < 0 ? -5 : 0;
+
+  // ── F7-F10: Fundamentais estruturais (não mudam diariamente) ──
+  xs += 8;  // BCs asiáticos comprando 15 meses consecutivos
+  xs += 3;  // Tensão geopolítica ativa (Oriente Médio)
+  xs += 2;  // ETF flows positivos na semana
+  xs += ST.xag && ST.xau/ST.xag > 90 ? +1 : 0; // ratio esticado
+
+  xs = Math.max(5, Math.min(95, xs));
 
   // ── NAS score — 10 fatores ──
   let ns=50;
-  ns += nPct*4;                                         // F1: momentum preço
-  ns += v>30?-15:v>25?-8:v<15?+8:+3;                  // F2: VIX (inverso ao NAS)
-  ns += realYield>2?-6:realYield>1?-3:+2;              // F3: yield real alto = comprime valuations
-  ns += dxy>105?-3:dxy<99?+3:0;                        // F4: DXY (efeito misto)
-  ns += spread<-0.5?-4:0;                              // F5: curva inv. = sinal recessivo
-  ns += 5;                                             // F6: COT longs 74%
-  ns += 4;                                             // F7: earnings season 78% beat
-  ns -= 3;                                             // F8: FOMC hold = juros altos
-  ns += ST.btc&&ST.btc>90000?+3:0;                    // F9: crypto risk-on sinaliza apetite
-  ns += 2;                                             // F10: AI superciclo (estrutural)
-  ns=Math.max(10,Math.min(92,ns));
+
+  // ── CONTEXTO MACRO NAS ──
+  const nasRiskOn  = v < 22 && !dxyStrong;
+  const nasRiskOff = v > 28 || (dxyStrong && nPct < 0);
+
+  // ── F1: MOMENTUM — ajustado ao contexto ──
+  const nasMomRaw = nPct > 1?+10: nPct > 0.3?+6: nPct > 0?+2:
+                    nPct > -0.3?-2: nPct > -1?-6: -10;
+  // NAS caindo com VIX explodindo = mais bearish; subindo com VIX calmo = mais bullish
+  const nasMomAdj = (nPct < 0 && vixPanic)  ? nasMomRaw * 1.5
+                  : (nPct < 0 && vixFear)   ? nasMomRaw * 1.2
+                  : (nPct > 0 && nasRiskOn)  ? nasMomRaw * 1.3
+                  : nasMomRaw;
+  ns += nasMomAdj;
+
+  // ── F2: VIX — impacto direto no NAS (correlação -0.89) ──
+  ns += vixPanic?-18: vixFear?-10: v<15?+8: v<20?+4: +1;
+
+  // ── F3: Yield real — comprime valuations growth ──
+  ns += realYield>2.5?-8: realYield>1.5?-5: realYield>0?-2: +4;
+
+  // ── F4: DXY ──
+  ns += dxy>106?-4: dxy<99?+3: 0;
+
+  // ── F5: Spread da curva ──
+  ns += spread<-0.8?-5: spread<-0.3?-2: 0;
+
+  // ── F6-F10: Estruturais ──
+  ns += 5;  // COT longs 74%
+  ns += 3;  // Earnings season 78% beat
+  ns -= 3;  // FOMC hold = juros elevados
+  ns += ST.btc&&ST.btc>90000?+3:0; // crypto = apetite a risco
+  ns += 2;  // AI superciclo
+
+  ns = Math.max(5, Math.min(95, ns));
 
   const lbl=s=>s>=78?'STRONG BULL':s>=64?'BULL':s>=54?'CAUTIOUS BULL':s>=44?'NEUTRO':s>=30?'CAUTIOUS BEAR':'BEAR';
   const corX=s=>s>=54?'green':s>=40?'gold':'red';
@@ -1257,6 +1320,7 @@ function saveKeys(){
   const fh=$('inp-fh').value.trim(); if(fh) FH_KEY=fh;
   const td=$('inp-td').value.trim(); if(td) TD_KEY=td;
   GEM_KEY=$('inp-gem').value.trim();
+  const av=document.getElementById('inp-av'); if(av&&av.value.trim()) localStorage.setItem('mb_av',av.value.trim());
   localStorage.setItem('mb_gold',GOLD_KEY);
   localStorage.setItem('mb_fh',FH_KEY);
   localStorage.setItem('mb_td',TD_KEY);
