@@ -847,19 +847,56 @@ function renderPrices(){
   const vm=$('m-vix'); if(vm) vm.style.color=v<15?'var(--gr)':v<25?'var(--am)':'var(--rd)';
   tx('m-dxy', ST.dxy?N(ST.dxy,2):'—');
 
-  // Risk Mode: ON se VIX<25 e NAS não caindo muito
-  const riskOn = v<25 && (nPct||0)>-0.5;
+  // Risk Mode — lógica multifator
+  // Fatores bearish: VIX alto, NAS caindo, DXY subindo forte, XAU subindo muito (safe haven)
+  const xPctRisk = pct(ST.xau, ST.xau_prev)||0;
+  const dxy      = ST.dxy||100;
+
+  let riskScore = 0; // positivo = risk on, negativo = risk off
+
+  // VIX (peso maior)
+  if(v < 15)       riskScore += 2;
+  else if(v < 20)  riskScore += 1;
+  else if(v < 25)  riskScore -= 1;
+  else if(v < 30)  riskScore -= 2;
+  else             riskScore -= 3;
+
+  // NAS performance
+  if((nPct||0) > 0.5)       riskScore += 2;
+  else if((nPct||0) > 0)    riskScore += 1;
+  else if((nPct||0) < -0.5) riskScore -= 1;
+  else if((nPct||0) < -1.5) riskScore -= 2;
+
+  // DXY: subindo forte = risk off
+  if(dxy > 106)      riskScore -= 1;
+  else if(dxy < 100) riskScore += 1;
+
+  // XAU subindo muito = fuga para safe haven = risk off
+  if(xPctRisk > 1.5) riskScore -= 1;
+
+  const riskOn = riskScore >= 0;
+
+  const riskLabels = {
+    on: {
+      title: riskScore >= 2 ? 'RISK ON' : 'RISK ON (NEUTRO)',
+      sub:   riskScore >= 2 ? 'Apetite a risco elevado' : 'Risk-on fraco — cautela',
+      bdr: 'var(--grbd)', bg: 'var(--grbg)', cls: 'up'
+    },
+    off: {
+      title: riskScore <= -3 ? 'RISK OFF FORTE' : 'RISK OFF',
+      sub:   riskScore <= -3
+        ? 'Fuga intensa para safe haven — VIX elevado'
+        : 'Cautela — fluxo para safe haven (ouro/JPY/USD)',
+      bdr: 'var(--rdbd)', bg: 'var(--rdbg)', cls: 'dn'
+    }
+  };
+
+  const rl = riskOn ? riskLabels.on : riskLabels.off;
   const rb=$('risk-box'),rt=$('risk-text'),rs=$('risk-sub');
   if(rb&&rt&&rs){
-    if(riskOn){
-      rb.style.borderColor='var(--grbd)';rb.style.background='var(--grbg)';
-      rt.textContent='RISK ON';rt.className='up';
-      rs.textContent=v<20?'Apetite a risco elevado':'Risk-on com VIX em alerta';
-    } else {
-      rb.style.borderColor='var(--rdbd)';rb.style.background='var(--rdbg)';
-      rt.textContent='RISK OFF';rt.className='dn';
-      rs.textContent='Fuga para safe haven (ouro/JPY)';
-    }
+    rb.style.borderColor=rl.bdr; rb.style.background=rl.bg;
+    rt.textContent=rl.title; rt.className=rl.cls;
+    rs.textContent=rl.sub;
   }
 
   // ── Níveis XAU ──
